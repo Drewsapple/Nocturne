@@ -17,6 +17,7 @@ class AlbumsPage(Adw.NavigationPage):
     loading = False
     skipped_albums = 0
     lazy_reload = False
+    reload_pending = False
 
     def __init__(self):
         super().__init__()
@@ -27,28 +28,39 @@ class AlbumsPage(Adw.NavigationPage):
             threading.Thread(target=self.load_albums, daemon=True).start()
 
     def load(self):
+        GLib.idle_add(self.load_if_empty)
+
+    def load_if_empty(self):
         if len(list(self.list_el.list_el)) <= 1:
-            GLib.idle_add(self.main_stack.set_visible_child_name, 'loading')
-            self.offset = 0
-            self.loading = False
-            self.lazy_reload = False
-            GLib.idle_add(self.reset)
-            GLib.idle_add(self.end_stack.set_visible_child_name, 'loading')
-            threading.Thread(target=self.load_albums, daemon=True).start()
+            self.reset_and_load()
 
     def reload(self):
+        GLib.idle_add(self.reset_and_load)
+
+    def reset_and_load(self):
+        if self.loading:
+            self.reload_pending = True
+            return
+
+        self.reload_pending = False
+        self.lazy_reload = False
+        self.main_stack.set_visible_child_name('loading')
         self.reset()
-        self.load()
+        self.end_stack.set_visible_child_name('loading')
+        # Reserve the load before starting the worker so scrollbar callbacks wait.
+        self.loading = True
+        threading.Thread(target=self.load_albums, kwargs={'initial_load': True}, daemon=True).start()
 
     def do_showing(self):
         if self.lazy_reload:
             self.reload()
 
     def reset(self):
-        GLib.idle_add(self.list_el.remove_all)
+        self.offset = 0
+        self.list_el.remove_all()
 
-    def load_albums(self):
-        if self.loading:
+    def load_albums(self, initial_load=False):
+        if self.loading and not initial_load:
             return
 
         self.loading = True
@@ -78,8 +90,14 @@ class AlbumsPage(Adw.NavigationPage):
 
         GLib.idle_add(self.end_stack.set_visible_child_name, 'end' if len(albums) - self.skipped_albums < 20 else 'loading')
         self.offset += 20
+        GLib.idle_add(self.finish_loading)
+
+    def finish_loading(self):
         self.loading = False
-        GLib.idle_add(self.update_visibility)
+        if self.reload_pending:
+            self.reset_and_load()
+        else:
+            self.update_visibility()
 
     @Gtk.Template.Callback()
     def scroll_edge_reached(self, scrolledwindow, pos):
@@ -92,4 +110,3 @@ class AlbumsPage(Adw.NavigationPage):
                 self.main_stack.set_visible_child_name('content')
                 return
         self.main_stack.set_visible_child_name('no-content')
-
